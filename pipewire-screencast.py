@@ -117,7 +117,7 @@ class DesktopPortalManager:
 
 
 class PipewireRecorder:
-    def __init__(self, crf, vbv_maxrate, location, cursor):
+    def __init__(self, crf, vbv_maxrate, location, cursor, vp9):
         self.loop = GLib.MainLoop()
         self._dpm = DesktopPortalManager(cursor)
         self._portal = None
@@ -126,6 +126,7 @@ class PipewireRecorder:
         self.vbv_maxrate = vbv_maxrate
         self.location = location
         self._delayed_terminate = None
+        self.vp9 = vp9
 
     def _gst_message_callback(self, bus, message):  # , _loop):
         if message.type == Gst.MessageType.EOS:
@@ -147,13 +148,23 @@ class PipewireRecorder:
 
     def _record(self, node_id):
         fd = self._dpm.get_pipewire_fd()
+        if self.vp9:
+            convert_cmd = (
+                f" ! vp9enc static-threshold=100 cq-level={self.crf}"
+                f" ! webmmux name=sink"
+            )
+        else:
+            convert_cmd = (
+                f" ! x264enc intra-refresh=true quantizer={self.crf} speed-preset=fast pass=qual bitrate={self.vbv_maxrate}"
+                f" ! h264parse"
+                f" ! matroskamux name=sink"
+            )
         self._pipeline = Gst.parse_launch(
             f"pipewiresrc fd={fd} path={node_id}"
+            f" ! videorate"
             f" ! videoconvert"
             f" ! queue"
-            f" ! x264enc intra-refresh=true quantizer={self.crf} speed-preset=fast pass=qual bitrate={self.vbv_maxrate}"
-            f" ! h264parse"
-            f" ! matroskamux name=sink"
+            f"{convert_cmd}"
             f' ! filesink location="{self.location}"'
         )
         # Messages don't get caught by the bus unless you explicitly ask
@@ -200,7 +211,7 @@ class PipewireRecorder:
 def main():
     parser = ArgumentParser(description="Record your desktop from PipeWire")
     parser.add_argument(
-        "--crf", type=float, help="x264 constant rate factor", default=18
+        "--crf", type=float, help="constant rate factor (or cq-level for vp9", default=18
     )
     parser.add_argument(
         "--maxrate",
@@ -208,13 +219,18 @@ def main():
         help="x264 vbv_maxrate: maximum rate at which video buffer will be filled, in kbps",
         default=10000,
     )
+    parser.add_argument("--vp9", help="Use the vp9 codec instead of h264", action="store_true")
     parser.add_argument("-c", "--cursor", help="Show cursor in recording", action="store_true")
-    parser.add_argument("-o", "--output", type=Path, help="output file location (mkv)")
+    parser.add_argument("-o", "--output", type=Path, help="Choose output file location")
     args = parser.parse_args()
 
     location = args.output
     if location is None:
-        location = Path.home() / (datetime.now().isoformat("_", "seconds") + ".mkv")
+        if args.vp9:
+            ext = "webm"
+        else:
+            ext = "mkv"
+        location = Path.home() / (datetime.now().isoformat("_", "seconds") + f".{ext}")
 
     if not location.parent.exists():
         print(f"Selected output directory {location.parent} does not exist.")
@@ -222,7 +238,7 @@ def main():
     DBusGMainLoop(set_as_default=True)
     Gst.init(None)
 
-    pwr = PipewireRecorder(args.crf, args.maxrate, location, args.cursor)
+    pwr = PipewireRecorder(args.crf, args.maxrate, location, args.cursor, args.vp9)
     pwr.record()
 
     # catch KeyboardInterrupt in a GLib loop friendly way

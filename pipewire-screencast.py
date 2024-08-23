@@ -24,7 +24,7 @@ class DesktopPortalManager:
     REQUEST_IFACE = "org.freedesktop.portal.Request"
     SCREENCAST_IFACE = "org.freedesktop.portal.ScreenCast"
 
-    def __init__(self):
+    def __init__(self, wants_cursor):
         self._bus = dbus.SessionBus()
         self._request_token_counter = 0
         self._session_token_counter = 0
@@ -33,6 +33,7 @@ class DesktopPortalManager:
         self._session = None
         self._portal = self._bus.get_object(self.DESKTOP_IFACE, self.DESKTOP_PATH)
         self._callback = None
+        self.wants_cursor = wants_cursor
 
     def _new_request_path(self):
         self._request_token_counter += 1
@@ -89,11 +90,14 @@ class DesktopPortalManager:
         self._session = results["session_handle"]
         print(f"session {self._session} created")
 
+        options = {"multiple": True, "types": dbus.UInt32(1 | 2)}
+        if self.wants_cursor:
+            options.update({"cursor_mode": dbus.UInt32(2)})
         self._dbus_screencast(
             self._portal.SelectSources,
             self._start_portal,
             self._session,
-            options={"multiple": False, "types": dbus.UInt32(1 | 2)},
+            options=options,
         )
 
     def get_streams(self, callback):
@@ -113,9 +117,9 @@ class DesktopPortalManager:
 
 
 class PipewireRecorder:
-    def __init__(self, crf, vbv_maxrate, location):
+    def __init__(self, crf, vbv_maxrate, location, cursor):
         self.loop = GLib.MainLoop()
-        self._dpm = DesktopPortalManager()
+        self._dpm = DesktopPortalManager(cursor)
         self._portal = None
         self._pipeline = None
         self.crf = crf
@@ -204,6 +208,7 @@ def main():
         help="x264 vbv_maxrate: maximum rate at which video buffer will be filled, in kbps",
         default=10000,
     )
+    parser.add_argument("-c", "--cursor", help="Show cursor in recording", action="store_true")
     parser.add_argument("-o", "--output", type=Path, help="output file location (mkv)")
     args = parser.parse_args()
 
@@ -217,7 +222,7 @@ def main():
     DBusGMainLoop(set_as_default=True)
     Gst.init(None)
 
-    pwr = PipewireRecorder(args.crf, args.maxrate, location)
+    pwr = PipewireRecorder(args.crf, args.maxrate, location, args.cursor)
     pwr.record()
 
     # catch KeyboardInterrupt in a GLib loop friendly way
